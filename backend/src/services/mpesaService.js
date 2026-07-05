@@ -95,6 +95,33 @@ class MpesaService {
     return /agent number and store number entered do not match/i.test(String(text || ''));
   }
 
+  isDuplicatedMsisdnDescription(text) {
+    return /duplicated msisdn|existing ussd session/i.test(String(text || ''));
+  }
+
+  getFriendlyStkError(apiError, error) {
+    const apiErrorMessage = String(apiError?.errorMessage || apiError?.ResponseDescription || '').trim();
+    const apiErrorCode = String(apiError?.errorCode || '').trim();
+
+    if (this.isDuplicatedMsisdnDescription(apiErrorMessage)) {
+      return 'This phone number has an active M-Pesa/USSD session. Complete it first, then retry STK push after a few seconds.';
+    }
+
+    if (
+      this.isAgentStoreMismatchDescription(apiErrorMessage) ||
+      apiErrorCode === '500.001.1001'
+    ) {
+      return 'M-Pesa rejected the merchant setup. Confirm the shortcode, passkey, transaction type, and PartyB belong to the same live merchant profile.';
+    }
+
+    return (
+      apiErrorMessage ||
+      (error.code === 'ECONNABORTED'
+        ? 'Safaricom STK request timed out before completion. Please try again.'
+        : error.message)
+    );
+  }
+
   resolvePartyB(transactionType = this.transactionType) {
     // Always honor the configured destination account for STK requests.
     return this.partyB || this.shortcode;
@@ -315,6 +342,8 @@ class MpesaService {
   async initiateStkPush(phone, amount) {
     try {
       this.refreshRuntimeConfig();
+      // Always start STK with the configured transaction type to avoid stale runtime switches.
+      this.runtimeTransactionType = this.transactionType;
       const normalizedPhone = this.normalizePhone(phone);
 
       if (this.environment !== 'production') {
@@ -426,15 +455,7 @@ class MpesaService {
       // DO NOT HIDE ERRORS - Show them so the user knows what's wrong
       return {
         success: false,
-        message:
-          (apiError?.errorCode === '500.001.1001'
-            ? 'M-Pesa rejected the merchant configuration. Confirm the shortcode, passkey, and transaction type belong to the same live merchant.'
-            : null) ||
-          apiError?.errorMessage ||
-          apiError?.ResponseDescription ||
-          (error.code === 'ECONNABORTED'
-            ? 'Safaricom STK request timed out before completion. Please try again.'
-            : error.message),
+        message: this.getFriendlyStkError(apiError, error),
         errorCode: apiError?.errorCode,
         fullError: apiError,
       };
@@ -490,13 +511,9 @@ class MpesaService {
       const mismatchDetected = !isSuccess && this.isAgentStoreMismatchDescription(response.ResultDesc);
 
       if (mismatchDetected) {
-        const nextTransactionType = this.getAlternateTransactionType(this.getActiveTransactionType());
-        if (nextTransactionType !== this.runtimeTransactionType) {
-          this.runtimeTransactionType = nextTransactionType;
-          console.warn(
-            `[M-Pesa] Detected Agent/Store mismatch. Switching runtime transaction type to ${this.runtimeTransactionType} for subsequent STK attempts.`
-          );
-        }
+        console.warn(
+          '[M-Pesa] Detected Agent/Store mismatch from status query. Keeping configured transaction type and requiring explicit config correction.'
+        );
       }
 
       let normalizedStatus = 'failed';
