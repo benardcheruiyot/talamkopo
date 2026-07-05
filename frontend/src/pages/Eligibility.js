@@ -36,7 +36,7 @@ const Eligibility = () => {
   });
 
   useEffect(() => {
-    document.title = 'Loan Eligibility | Tala Mkopaji';
+    document.title = 'Loan Eligibility | Tala Mkopo';
   }, []);
 
   const validateName = (v) => {
